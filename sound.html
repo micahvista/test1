@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>AI 多模态分析：声音比对 & 吸烟检测</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 40px auto; text-align: center; background: #f4f7f6; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        button { padding: 10px 20px; font-size: 16px; border: none; border-radius: 6px; cursor: pointer; margin: 5px; transition: 0.3s;}
+        .record-btn { background-color: #ff4757; color: white; }
+        .stop-btn { background-color: #7bed9f; color: #2f3542; display: none; }
+        .submit-btn { background-color: #1e90ff; color: white; width: 100%; font-size: 18px; padding: 15px;}
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #resultBox { margin-top: 20px; padding: 15px; font-weight: bold; border-radius: 8px; font-size: 1.2em;}
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .warning { background-color: #fff3cd; color: #856404; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.7; } }
+    </style>
+</head>
+<body>
+
+    <h2>🗣️ 声音相似度比对</h2>
+    <div class="card">
+        <h3>1. 录制参考样本 (Reference)</h3>
+        <button id="refRecord" class="record-btn">🔴 开始录音</button>
+        <button id="refStop" class="stop-btn">⏹ 停止录音</button>
+        <p id="refStatus">等待录音...</p>
+        <audio id="refPlayer" controls style="display:none; width: 100%;"></audio>
+    </div>
+
+    <div class="card">
+        <h3>2. 录制测试样本 (Test)</h3>
+        <button id="testRecord" class="record-btn">🔴 开始录音</button>
+        <button id="testStop" class="stop-btn">⏹ 停止录音</button>
+        <p id="testStatus">等待录音...</p>
+        <audio id="testPlayer" controls style="display:none; width: 100%;"></audio>
+    </div>
+    <button id="compareBtn" class="submit-btn" disabled>🚀 开始比对声音</button>
+    <div id="resultBox" style="display: none;"></div>
+
+    <hr style="margin: 40px 0; border: 1px solid #ddd;">
+
+    <h2>🚭 实时视频吸烟检测</h2>
+    <div class="card">
+        <video id="webcam" autoplay playsinline width="100%" style="border-radius: 8px; background-color: #000;"></video>
+        <canvas id="canvas" style="display:none;"></canvas>
+        
+        <br><br>
+        <button id="startWebcam" class="submit-btn" style="background-color: #2ed573;">📹 开启摄像头检测</button>
+        <button id="stopWebcam" class="stop-btn" style="width: 100%; padding: 15px; font-size: 18px; margin-top: 5px;">⏹ 关闭摄像头</button>
+        
+        <div id="smokeStatus" style="margin-top: 15px; padding: 15px; font-size: 1.2em; border-radius: 8px; font-weight: bold; background: #eee;">
+            等待开启摄像头...
+        </div>
+    </div>
+
+    <script>
+        // ================== 音频比对逻辑 (保留原有) ==================
+        let refBlob = null;
+        let testBlob = null;
+
+        function setupRecorder(recordBtnId, stopBtnId, statusId, playerId, onSave) {
+            let mediaRecorder;
+            let audioChunks = [];
+            const recordBtn = document.getElementById(recordBtnId);
+            const stopBtn = document.getElementById(stopBtnId);
+            const statusText = document.getElementById(statusId);
+            const player = document.getElementById(playerId);
+
+            recordBtn.onclick = async () => {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    onSave(audioBlob);
+                    player.src = URL.createObjectURL(audioBlob);
+                    player.style.display = "block";
+                    statusText.innerText = "录音完成！";
+                    stream.getTracks().forEach(track => track.stop());
+                    if (refBlob && testBlob) document.getElementById("compareBtn").disabled = false;
+                };
+                audioChunks = [];
+                mediaRecorder.start();
+                recordBtn.style.display = "none";
+                stopBtn.style.display = "inline-block";
+                statusText.innerText = "正在录音...";
+            };
+
+            stopBtn.onclick = () => {
+                mediaRecorder.stop();
+                stopBtn.style.display = "none";
+                recordBtn.style.display = "inline-block";
+                recordBtn.innerText = "重新录音";
+            };
+        }
+
+        setupRecorder("refRecord", "refStop", "refStatus", "refPlayer", (blob) => refBlob = blob);
+        setupRecorder("testRecord", "testStop", "testStatus", "testPlayer", (blob) => testBlob = blob);
+
+        document.getElementById("compareBtn").onclick = async () => {
+            const resultBox = document.getElementById("resultBox");
+            resultBox.style.display = "block";
+            resultBox.className = "";
+            resultBox.innerText = "⏳ 正在上传并交给 AI 模型分析，请稍候...";
+
+            const formData = new FormData();
+            formData.append("reference_audio", refBlob, "reference.wav");
+            formData.append("test_audio", testBlob, "test.wav");
+            formData.append("threshold", 0.25);
+
+            try {
+                const response = await fetch("http://127.0.0.1:8000/api/compare_audio", { method: "POST", body: formData });
+                const data = await response.json();
+                if (data.status === "success") {
+                    resultBox.className = data.is_same ? "success" : "error";
+                    resultBox.innerHTML = `${data.message}<br><span style="font-size:0.8em; color:#666;">(余弦距离: ${data.distance} | 阈值: ${data.threshold})</span>`;
+                } else {
+                    resultBox.className = "error";
+                    resultBox.innerText = "出错了：" + data.message;
+                }
+            } catch (err) {
+                resultBox.className = "error";
+                resultBox.innerText = "网络请求失败，请确保 Python 后端已启动。";
+            }
+        };
+
+        // ================== 实时摄像头吸烟检测逻辑 (新增) ==================
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const smokeStatus = document.getElementById('smokeStatus');
+        let ws = null;
+        let detectInterval = null;
+
+        document.getElementById('startWebcam').onclick = async () => {
+            try {
+                // 请求视频权限
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                
+                document.getElementById('startWebcam').style.display = "none";
+                document.getElementById('stopWebcam').style.display = "block";
+                smokeStatus.innerText = "正在连接 AI 检测引擎...";
+
+                // 建立 WebSocket 连接 (请确保后端地址正确)
+                ws = new WebSocket("ws://127.0.0.1:8000/ws/detect_smoking");
+
+                ws.onopen = () => {
+                    smokeStatus.innerText = "✅ 模型就绪，正在进行实时监测...";
+                    smokeStatus.className = "success";
+                    
+                    // 每隔 500 毫秒截取一帧画面发给后端
+                    detectInterval = setInterval(() => {
+                        if(ws.readyState === WebSocket.OPEN && video.videoWidth > 0) {
+                            // 保持较低分辨率发送，加快推理与传输速度
+                            canvas.width = 320;
+                            canvas.height = 240;
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                            // 压缩为 JPEG 格式的 Base64 字符串
+                            const base64Img = canvas.toDataURL('image/jpeg', 0.6);
+                            ws.send(base64Img);
+                        }
+                    }, 500);
+                };
+
+                ws.onmessage = (event) => {
+                    const res = JSON.parse(event.data);
+                    if (res.is_smoking) {
+                        smokeStatus.innerText = `🚨 警告：检测到吸烟！(置信度: ${(res.confidence * 100).toFixed(1)}%)`;
+                        smokeStatus.className = "warning";
+                    } else {
+                        smokeStatus.innerText = "✅ 画面安全，未检测到吸烟";
+                        smokeStatus.className = "success";
+                    }
+                };
+
+                ws.onerror = () => {
+                    smokeStatus.innerText = "❌ WebSocket 连接失败";
+                    smokeStatus.className = "error";
+                };
+
+            } catch (err) {
+                alert("无法访问摄像头: " + err);
+            }
+        };
+
+        document.getElementById('stopWebcam').onclick = () => {
+            // 关闭摄像头画面
+            if(video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            
+            // 停止截图循环并关闭 WebSocket
+            if (detectInterval) clearInterval(detectInterval);
+            if (ws) ws.close();
+            
+            document.getElementById('startWebcam').style.display = "block";
+            document.getElementById('stopWebcam').style.display = "none";
+            
+            smokeStatus.innerText = "摄像头已关闭";
+            smokeStatus.className = "";
+            smokeStatus.style.background = "#eee";
+        };
+    </script>
+</body>
+</html>
